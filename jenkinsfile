@@ -1,11 +1,72 @@
-package edu.iti;
-def build(imageName, imageTag){
-    sh "docker build -t ${imageName}:${imageTag} ."
+@library('sysadmin')_
 
-}
-def login(userName, password){
-    sh "docker login -u ${username} -p ${password}"
-}
-def push(userName, password){
-    sh "docker push ${username}:${password}"
+pipeline{
+    agent{
+        label 'java-agent-01'
+    }
+    tools {
+        maven 'maven-352'
+        jdk 'java-11'
+    }  
+    stages{
+        stage("Build App"){
+            steps{
+                sh 'java --version'
+                sh 'mvn package install -DskipTests'
+            }
+        }
+        stage("Archive App"){
+            steps{
+                archiveArtifacts artifacts: '**/*.jar'
+            }
+        }
+        stage("Upload to nexus"){
+            steps{
+                withCredentials([usernamePassword(credentialsId: 'maven-nexus-user', passwordVariable: 'NEXUS_PASSWORD', usernameVariable: 'NEXUS_USERNAME')]) {
+                    sh """
+                        curl -v -u ${NEXUS_USERNAME}:${NEXUS_PASSWORD} \
+                        -X POST 'http://192.168.61.133:30161/service/rest/v1/components?repository=maven-releases' \
+                        -H 'accept: application/json' \
+                        -H 'Content-Type: multipart/form-data' \
+                        -F 'maven2.groupId=com.example' \
+                        -F 'maven2.artifactId=demo1' \
+                        -F 'maven2.version=0.0.1' \
+                        -F 'maven2.asset1=@target/demo1-0.0.1.jar' \
+                        -F 'maven2.asset1.extension=jar'
+                    """
+                }
+            }
+        }
+        stage("Build Docker Image"){
+            steps{
+                sh "docker build -t hassaneid/sysadmin-java:v${BUILD_NUMBER} ."
+            }
+        }
+        stage("Push Docker Image"){
+            steps{
+                sh "docker push hassaneid/sysadmin-java:v${BUILD_NUMBER}"
+            }
+        }
+        stage("Update ArgoCD Repo"){
+            steps{
+                sh """
+                    if [ -d "./sysadmin-cd" ]; then
+                    cd sysadmin-cd &&
+                    git pull origin HEAD;
+                    else
+                    git clone https://github.com/Hassan-Eid-Hassan/sysadmin-cd.git &&
+                    cd sysadmin-cd;
+                    fi;
+                    cat ./deployment.yaml
+                    sed -i 's|image: .*|image: hassaneid/sysadmin-java:v${BUILD_NUMBER}|g' ./deployment.yaml
+                    cat ./deployment.yaml
+                    git config user.email hassaneid339@gmail.com
+                    git config user.name Hassan-Eid-Hassan
+                    git add deployment.yaml
+                    git commit -m 'Done by Jenkins Job changemanifest by user : ${env.user}' deployment.yaml
+                    git push origin HEAD
+                """
+            }
+        }
+    }
 }
